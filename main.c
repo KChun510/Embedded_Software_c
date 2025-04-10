@@ -9,7 +9,6 @@
  unsigned char valid_press = 0x00;
 
  void check_button_press(){
-	 avr_wait(3000);
 	 if(!(PINB & 0x02)){
 		 valid_press = 0x01;
 		 return;
@@ -27,7 +26,6 @@ int main(void)
 	// Use PORT for writing
 	// USE PIN for reading
     DDRB = DDRB | 0x01;
-	avr_wait(3000);
     while (1) {
 		
 		if(!(PINB & 0x02)){
