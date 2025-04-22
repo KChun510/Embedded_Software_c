@@ -10,6 +10,8 @@
 #include <avr/pgmspace.h>
 #include <avr/io.h>
 
+#define NULL ((void*)0)
+
 #define XTAL_FRQ 8000000lu
 
 #define SET_BIT(p,i) ((p) |=  (1 << (i)))
