@@ -8,6 +8,8 @@
 #include "lcd.h"
 #include <string.h>
 
+unsigned char interupt_flag = 0;
+
 const char line1[] PROGMEM = "MM/DD/YYYY   OFF";
 const char line2am[] PROGMEM = "HH:MM:SSam    ST";
 const char line2pm[] PROGMEM = "HH:MM:SSpm    ST";
@@ -21,6 +23,16 @@ uint8_t LCD_ROW_1 = 1;
 uint8_t write_one = 1;
 static uint8_t *curr_addr = &row0_col;
 
+
+uint8_t i_month;
+uint8_t i_day;
+// NEED to split year into two halves. 2^8 = 256 < 2020
+uint8_t i_year_first;
+uint8_t i_year_second;
+uint8_t i_hour;
+uint8_t i_min;
+uint8_t i_sec;
+
 static inline void
 sleep_700ns(void)
 {
@@ -31,6 +43,14 @@ sleep_700ns(void)
 	NOP();
 	NOP();
 	return;
+}
+
+void interupt(){
+	interupt_flag = 1;
+}
+
+void carry_on(){
+	interupt_flag = 0;
 }
 
 void 
@@ -236,7 +256,6 @@ uint8_t validate_input(uint8_t row, uint8_t col, char c){
 void lcd_update(char c){
 	// addr of row 1: 0xC0
 	// addr of row 0: 0x80
-
 	//char display_mat[2][50] = {"MM/DD/YYYY   OFF", "HH:MM:SSam    ST"};
 	uint8_t curr_row = ((*curr_addr & 0xF0) ==  0x80) ? 0 : 1;
 	uint8_t curr_col = *curr_addr & 0x0F;
@@ -267,15 +286,7 @@ void reset_lcd(){
 	strcpy(display_mat[1], line2am);
 	lcd_write_default();
 	send_lcd_data(0x0F, true);
-}
-
-void set_lcd(){
-	display_mat[0][13] = ' ';
-	display_mat[0][14] = 'O';
-	display_mat[0][15] = 'N';
-	check_leap_year())
-	lcd_write_default();
-	send_lcd_data(0x0C, true);
+	carry_on();
 }
 
 void change_am_pm(){
@@ -285,4 +296,51 @@ void change_am_pm(){
 		display_mat[1][8] = 'a';
 	}
 	lcd_write_default();
+}
+
+void update_lcd_vals(uint8_t num, uint8_t row, uint8_t col){
+	uint8_t row_addr = (row == 0) ? (0x80 + col) : (0xC0 + col);
+	send_lcd_data(row_addr, true);
+	if(num >= 100){
+		send_lcd_data((num / 100) + '0', false);
+		num %= 100;
+		send_lcd_data((num / 10) + '0', false); 
+		send_lcd_data((num % 10) + '0', false);
+	}else if (num >= 10){
+		send_lcd_data((num / 10) + '0', false);
+		send_lcd_data((num % 10) + '0', false);
+	} else {
+		send_lcd_data('0', false);
+		send_lcd_data(num + '0', false);
+	}
+}
+
+void set_lcd(){
+	display_mat[0][13] = ' ';
+	display_mat[0][14] = 'O';
+	display_mat[0][15] = 'N';
+	check_leap_year();
+	lcd_write_default();
+	send_lcd_data(0x0C, true);
+
+	// Set global vars, on this set call.
+	// So that "increment_cal" can be called/ externally controlled by another clock.
+	uint8_t i_month = ((display_mat[0][0] - '0') * 10) + (display_mat[0][1] - '0');
+	uint8_t i_day = ((display_mat[0][3] - '0') * 10) + (display_mat[0][4] - '0');
+	// NEED to split year into two halves. 2^8 = 256 < 2020
+	uint8_t i_year_first = (display_mat[0][6] - '0') * 10 + (display_mat[0][7] - '0');
+	uint8_t i_year_second = (display_mat[0][8] - '0') * 10 + (display_mat[0][9] - '0');
+	uint8_t i_hour = ((display_mat[1][0] - '0') * 10) + (display_mat[1][1] - '0');
+	uint8_t i_min = ((display_mat[1][3] - '0') * 10) + (display_mat[1][4] - '0');
+	uint8_t i_sec = ((display_mat[1][6] - '0') * 10) + (display_mat[1][7] - '0');
+}
+
+void increment_cal(){
+	++i_sec;
+	avr_wait(1000);
+	update_lcd_vals(i_sec, 1, 6);
+	if(i_sec >= 60){
+		++i_min;
+		i_sec = 0x00;
+	}
 }

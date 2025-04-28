@@ -14,10 +14,13 @@ unsigned char right = 1;
 unsigned char down = 1;
 unsigned char up = 0;
 
+unsigned char lcd_is_set = 0;
+
 void check_reset_lcd(){
 	avr_wait(2000);
 	if(get_key() == '*'){
 		reset_lcd();
+		lcd_is_set = 0;
 	}
 }
 
@@ -30,6 +33,7 @@ void check_hash_lcd(){
 		change_am_pm();
 	}else{
 		set_lcd();
+		lcd_is_set = 1;
 	}
 }
 
@@ -73,6 +77,9 @@ int main(void)
 	
     while (1) {
 		key_pad_input = get_key();
+		if(lcd_is_set){
+			increment_cal();
+		}
 		if(key_pad_input == '*'){
 			check_reset_lcd();		
 		}else if (key_pad_input == '#'){
