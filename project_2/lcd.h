@@ -8,6 +8,8 @@
 #define _LCD_H
 #include <stdbool.h>
 
+void get_lcd_data(void);
+
 void send_lcd_data(unsigned char data, bool instruc);
 
 void lcd_init(void);
@@ -23,5 +25,13 @@ void lcd_put(char c);
 void lcd_puts1(const char *s);
 
 void lcd_puts2(const char *s);
+
+void lcd_update(char c);
+
+void set_lcd();
+
+void reset_lcd();
+
+void change_am_pm();
 
 #endif /* _LCD_H */

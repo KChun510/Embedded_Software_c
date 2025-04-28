@@ -17,7 +17,19 @@ unsigned char up = 0;
 void check_reset_lcd(){
 	avr_wait(2000);
 	if(get_key() == '*'){
-		lcd_write_default();
+		reset_lcd();
+	}
+}
+
+// During set mode. 
+// Pressing #, will change from AM to PM
+// Holding #, will set the clock
+void check_hash_lcd(){
+	avr_wait(1000);
+	if(get_key() == '#'){
+		change_am_pm();
+	}else{
+		set_lcd();
 	}
 }
 
@@ -62,13 +74,16 @@ int main(void)
     while (1) {
 		key_pad_input = get_key();
 		if(key_pad_input == '*'){
-			check_reset_lcd();	
+			check_reset_lcd();		
+		}else if (key_pad_input == '#'){
+			check_hash_lcd();
+			avr_wait(250);
 		}else if (key_pad_input >= 0x41 && key_pad_input <= 0x44){
 			move_lcd_cursor(&key_pad_input);
 			avr_wait(250);
 		}
 		else if(key_pad_input){
-			lcd_put(key_pad_input);
+			lcd_update(key_pad_input);
 			PORTB = 0x01;
 			avr_wait(500);
 			PORTB = 0x00;
