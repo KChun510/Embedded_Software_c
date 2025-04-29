@@ -30,37 +30,28 @@ void check_reset_lcd(){
 void check_hash_lcd(){
 	avr_wait(1000);
 	if(get_key() == '#'){
-		change_am_pm();
-	}else{
 		set_lcd();
 		lcd_is_set = 1;
-	}
-}
-
-void check_push(){
-	if(!(PINB & 0x02)){
-		PORTB = 0x01;
-		avr_wait(500);
-		PORTB = 0x00;
 		avr_wait(500);
 	}else{
-		PORTB = 0x00;
+		change_am_pm();
+		avr_wait(500);
 	}
 }
 
 void move_lcd_cursor(uint8_t *key_pad_input){
 	switch(*key_pad_input){
 		case 'A':
-			lcd_pos(&up, NULL);
+			lcd_cursor_pos(&up, NULL);
 			break;
 		case 'B':
-			lcd_pos(&down,NULL);
+			lcd_cursor_pos(&down,NULL);
 			break;
 		case 'C':
-			lcd_pos(NULL, &left);
+			lcd_cursor_pos(NULL, &left);
 			break;
 		case 'D':
-			lcd_pos(NULL, &right);
+			lcd_cursor_pos(NULL, &right);
 			break;
 	}
 }
@@ -84,17 +75,13 @@ int main(void)
 			check_reset_lcd();		
 		}else if (key_pad_input == '#'){
 			check_hash_lcd();
-			avr_wait(250);
 		}else if (key_pad_input >= 0x41 && key_pad_input <= 0x44){
 			move_lcd_cursor(&key_pad_input);
 			avr_wait(250);
 		}
 		else if(key_pad_input){
 			lcd_update(key_pad_input);
-			PORTB = 0x01;
-			avr_wait(500);
-			PORTB = 0x00;
-			avr_wait(500);
+			avr_wait(250);
 		}
     }
 	return 0;

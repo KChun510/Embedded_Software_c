@@ -16,7 +16,7 @@ void lcd_init(void);
 
 void lcd_clr(void);
 
-void lcd_pos(uint8_t* shift_r, uint8_t* shift_col);
+void lcd_cursor_pos(uint8_t* shift_r, uint8_t* shift_col);
 
 void lcd_write_default();
 

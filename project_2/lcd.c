@@ -8,14 +8,13 @@
 #include "lcd.h"
 #include <string.h>
 
-unsigned char interupt_flag = 0;
-
 const char line1[] PROGMEM = "MM/DD/YYYY   OFF";
 const char line2am[] PROGMEM = "HH:MM:SSam    ST";
 const char line2pm[] PROGMEM = "HH:MM:SSpm    ST";
 const char line2mil[] PROGMEM = "HH:MM:SS    24hr";
 char display_mat[2][50] = {"MM/DD/YYYY   OFF", "HH:MM:SSam    ST"};
 char time_mode = 's';
+uint8_t is_leap_year = 0;
 
 static uint8_t row0_col = 0x80;
 static uint8_t row1_col = 0xC0;
@@ -45,16 +44,7 @@ sleep_700ns(void)
 	return;
 }
 
-void interupt(){
-	interupt_flag = 1;
-}
-
-void carry_on(){
-	interupt_flag = 0;
-}
-
-void 
-lcd_pulse_enable(){
+void lcd_pulse_enable(){
 	// Enable Pin, set on pin 2
 	SET_BIT(PORTD, 2);
 	avr_wait(1);
@@ -68,8 +58,7 @@ void print_hex(uint8_t byte){
 	lcd_put(hex_chars[byte & 0x0F]);
 }
 
-void 
-send_lcd_data(unsigned char data, bool instruc){
+void send_lcd_data(unsigned char data, bool instruc){
 	if(instruc){
 		CLR_BIT(PORTD, 0);
 		}else{
@@ -90,20 +79,18 @@ send_lcd_data(unsigned char data, bool instruc){
 	lcd_pulse_enable();
 }
 
-void
-lcd_write_default(){
+void lcd_write_default(){
 	row0_col = 0x80;
 	row1_col = 0xC0;
 	curr_addr = &row0_col;
 	lcd_clr();
 	lcd_puts2(display_mat[0]);
-	lcd_pos(&LCD_ROW_1, NULL);
+	lcd_cursor_pos(&LCD_ROW_1, NULL);
 	lcd_puts2(display_mat[1]);
 }
 
 
-void
-lcd_init(void)
+void lcd_init(void)
 {
 	// D series, used for LCD.
 	// All pins OUTPUT, except pin 8 unused.
@@ -131,8 +118,7 @@ lcd_init(void)
 	lcd_write_default();
 }
 
-void
-lcd_clr(void)
+void lcd_clr(void)
 {
 	send_lcd_data(0x01, true);
 	avr_wait(2);
@@ -146,11 +132,8 @@ uint8_t check_cursor_pos(){
 	return 1;
 }
 
-void
-lcd_pos(uint8_t* shift_r, uint8_t* shift_col)
+void lcd_cursor_pos(uint8_t* shift_r, uint8_t* shift_col)
 {
-	// addr of row 1: 0xC0
-	// addr of row 0: 0x80
 	if(shift_r != NULL){
 		curr_addr = (*shift_r == 0) ? &row0_col : &row1_col;
 	}
@@ -169,16 +152,13 @@ lcd_pos(uint8_t* shift_r, uint8_t* shift_col)
 	send_lcd_data(*curr_addr, true);
 }
 
-void
-lcd_put(char c)
+void lcd_put(char c)
 {
 	send_lcd_data(c, false);
 }
 
-
 // Reads from prgm mem/ flash mem
-void
-lcd_puts1(const char *s)
+void lcd_puts1(const char *s)
 {
 	char c;
 	while ((c = pgm_read_byte(s++)) != 0) {
@@ -187,8 +167,7 @@ lcd_puts1(const char *s)
 }
 
 // Reads from DDRAM
-void
-lcd_puts2(const char *s)
+void lcd_puts2(const char *s)
 {
 	char c;
 	while ((c = *(s++)) != 0) {
@@ -252,7 +231,7 @@ uint8_t validate_input(uint8_t row, uint8_t col, char c){
 	return 1;
 }
 
-
+// Used for updating, from main/user control.
 void lcd_update(char c){
 	// addr of row 1: 0xC0
 	// addr of row 0: 0x80
@@ -282,11 +261,23 @@ uint8_t check_leap_year(){
 }
 
 void reset_lcd(){
+	/*
 	strcpy(display_mat[0], line1);
 	strcpy(display_mat[1], line2am);
+	*/
 	lcd_write_default();
 	send_lcd_data(0x0F, true);
-	carry_on();
+	
+	// Reset vars to default
+	/*
+	i_month = ((display_mat[0][0] - '0') * 10) + (display_mat[0][1] - '0');
+	i_day = ((display_mat[0][3] - '0') * 10) + (display_mat[0][4] - '0');
+	i_year_first = (display_mat[0][6] - '0') * 10 + (display_mat[0][7] - '0');
+	i_year_second = (display_mat[0][8] - '0') * 10 + (display_mat[0][9] - '0');
+	i_hour = ((display_mat[1][0] - '0') * 10) + (display_mat[1][1] - '0');
+	i_min = ((display_mat[1][3] - '0') * 10) + (display_mat[1][4] - '0');
+	i_sec = ((display_mat[1][6] - '0') * 10) + (display_mat[1][7] - '0');
+	*/
 }
 
 void change_am_pm(){
@@ -322,25 +313,75 @@ void set_lcd(){
 	check_leap_year();
 	lcd_write_default();
 	send_lcd_data(0x0C, true);
-
 	// Set global vars, on this set call.
 	// So that "increment_cal" can be called/ externally controlled by another clock.
-	uint8_t i_month = ((display_mat[0][0] - '0') * 10) + (display_mat[0][1] - '0');
-	uint8_t i_day = ((display_mat[0][3] - '0') * 10) + (display_mat[0][4] - '0');
-	// NEED to split year into two halves. 2^8 = 256 < 2020
-	uint8_t i_year_first = (display_mat[0][6] - '0') * 10 + (display_mat[0][7] - '0');
-	uint8_t i_year_second = (display_mat[0][8] - '0') * 10 + (display_mat[0][9] - '0');
-	uint8_t i_hour = ((display_mat[1][0] - '0') * 10) + (display_mat[1][1] - '0');
-	uint8_t i_min = ((display_mat[1][3] - '0') * 10) + (display_mat[1][4] - '0');
-	uint8_t i_sec = ((display_mat[1][6] - '0') * 10) + (display_mat[1][7] - '0');
+	i_month = ((display_mat[0][0] - '0') * 10) + (display_mat[0][1] - '0');
+	i_day = ((display_mat[0][3] - '0') * 10) + (display_mat[0][4] - '0');
+	i_year_first = (display_mat[0][6] - '0') * 10 + (display_mat[0][7] - '0');
+	i_year_second = (display_mat[0][8] - '0') * 10 + (display_mat[0][9] - '0');
+	i_hour = ((display_mat[1][0] - '0') * 10) + (display_mat[1][1] - '0');
+	i_min = ((display_mat[1][3] - '0') * 10) + (display_mat[1][4] - '0');
+	i_sec = ((display_mat[1][6] - '0') * 10) + (display_mat[1][7] - '0');
+	is_leap_year = check_leap_year();
+}
+
+void date_inc(){
+	uint8_t max_day;
+	if(i_month == 4 || i_month == 6 || i_month == 9 || i_month == 11){
+		max_day = 30;
+	}
+	else if(i_month == 2){
+		max_day = (is_leap_year ? 29 : 28);
+	}
+	else{
+		max_day = 31;
+	}
+	if(i_day >= max_day){
+		++i_month;
+		i_day = 0x00;
+		update_lcd_vals(i_month, 0, 0);
+		update_lcd_vals(i_day, 0, 3);
+	}
+	if(i_month > 12){
+		++i_year_first;
+		if(i_year_first > 99){
+			++i_year_second;
+			i_year_first = 0x00;
+		}
+		update_lcd_vals(i_year_first, 0, 8);
+		update_lcd_vals(i_year_second, 0, 6);
+	}
 }
 
 void increment_cal(){
-	++i_sec;
-	avr_wait(1000);
-	update_lcd_vals(i_sec, 1, 6);
-	if(i_sec >= 60){
-		++i_min;
-		i_sec = 0x00;
-	}
+		if(i_sec >= 60){
+			++i_min;
+			update_lcd_vals(i_min, 1, 3);
+			i_sec = 0x00;
+		}
+		if(i_min >= 60){
+			++i_hour;
+			i_min = 0x00;
+			update_lcd_vals(i_hour, 1, 0);
+			update_lcd_vals(i_min, 1, 3);
+		}
+		if(i_hour >= 12){
+			if(display_mat[1][8] == 'a'){
+				change_am_pm();
+				}else if(display_mat[1][8] == 'p'){
+				++i_day;
+				change_am_pm();
+				update_lcd_vals(i_day, 0, 3);
+				date_inc();
+			}
+			i_hour = 0x00;
+			i_min = 0x00;
+			i_sec = 0x00;
+			update_lcd_vals(i_sec, 1, 6);
+			update_lcd_vals(i_hour, 1, 0);
+			update_lcd_vals(i_min, 1, 3);
+		}
+		avr_wait(1000);
+		++i_sec;
+		update_lcd_vals(i_sec, 1, 6);
 }
