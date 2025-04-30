@@ -22,7 +22,9 @@ Each project demonstrates a specific concept or peripheral, including schematics
 Below are visual references stored in the `diagram/` directory:
 
 <!-- Example image links below. Replace or add filenames as needed -->
+#### Project 2
 ![Project 2](diagrams/CS145_Proj2.drawio.png)
+#### Project 1
 ![Project 1](diagrams/CS145_Proj1.drawio.png)
 ---
 
