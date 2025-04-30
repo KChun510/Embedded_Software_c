@@ -28,7 +28,7 @@ void lcd_puts2(const char *s);
 
 void lcd_update(char c);
 
-void set_lcd();
+uint8_t set_lcd();
 
 void reset_lcd();
 

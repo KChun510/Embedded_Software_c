@@ -13,8 +13,8 @@ const char line2am[] PROGMEM = "HH:MM:SSam    ST";
 const char line2pm[] PROGMEM = "HH:MM:SSpm    ST";
 const char line2mil[] PROGMEM = "HH:MM:SS    24hr";
 char display_mat[2][50] = {"MM/DD/YYYY   OFF", "HH:MM:SSam    ST"};
-char time_mode = 's';
 uint8_t is_leap_year = 0;
+uint8_t past_twelve = 0;
 
 static uint8_t row0_col = 0x80;
 static uint8_t row1_col = 0xC0;
@@ -261,6 +261,9 @@ uint8_t check_leap_year(){
 }
 
 void reset_lcd(){
+	display_mat[0][13] = 'O';
+	display_mat[0][14] = 'F';
+	display_mat[0][15] = 'F';
 	/*
 	strcpy(display_mat[0], line1);
 	strcpy(display_mat[1], line2am);
@@ -269,7 +272,6 @@ void reset_lcd(){
 	send_lcd_data(0x0F, true);
 	
 	// Reset vars to default
-	/*
 	i_month = ((display_mat[0][0] - '0') * 10) + (display_mat[0][1] - '0');
 	i_day = ((display_mat[0][3] - '0') * 10) + (display_mat[0][4] - '0');
 	i_year_first = (display_mat[0][6] - '0') * 10 + (display_mat[0][7] - '0');
@@ -277,7 +279,7 @@ void reset_lcd(){
 	i_hour = ((display_mat[1][0] - '0') * 10) + (display_mat[1][1] - '0');
 	i_min = ((display_mat[1][3] - '0') * 10) + (display_mat[1][4] - '0');
 	i_sec = ((display_mat[1][6] - '0') * 10) + (display_mat[1][7] - '0');
-	*/
+	
 }
 
 void change_am_pm(){
@@ -306,23 +308,43 @@ void update_lcd_vals(uint8_t num, uint8_t row, uint8_t col){
 	}
 }
 
-void set_lcd(){
-	display_mat[0][13] = ' ';
-	display_mat[0][14] = 'O';
-	display_mat[0][15] = 'N';
-	check_leap_year();
-	lcd_write_default();
-	send_lcd_data(0x0C, true);
-	// Set global vars, on this set call.
-	// So that "increment_cal" can be called/ externally controlled by another clock.
-	i_month = ((display_mat[0][0] - '0') * 10) + (display_mat[0][1] - '0');
-	i_day = ((display_mat[0][3] - '0') * 10) + (display_mat[0][4] - '0');
-	i_year_first = (display_mat[0][6] - '0') * 10 + (display_mat[0][7] - '0');
-	i_year_second = (display_mat[0][8] - '0') * 10 + (display_mat[0][9] - '0');
-	i_hour = ((display_mat[1][0] - '0') * 10) + (display_mat[1][1] - '0');
-	i_min = ((display_mat[1][3] - '0') * 10) + (display_mat[1][4] - '0');
-	i_sec = ((display_mat[1][6] - '0') * 10) + (display_mat[1][7] - '0');
-	is_leap_year = check_leap_year();
+uint8_t check_valid_set(){
+	uint8_t max_col = 10;
+	for(uint8_t i = 0; i < 2; ++i){
+		if(i == 1) max_col -= 2;
+		for(uint8_t j = 0; j < max_col; ++j){
+			if(j == 2 || j == 5) ++j;
+			if(!((display_mat[i][j] >= 0x30) && (display_mat[i][j] <= 0x39))){
+				return 0;
+			}
+		}
+	}
+	return 1;
+}
+
+uint8_t set_lcd(){
+	if(check_valid_set()){
+		display_mat[0][13] = ' ';
+		display_mat[0][14] = 'O';
+		display_mat[0][15] = 'N';
+		check_leap_year();
+		lcd_write_default();
+		send_lcd_data(0x0C, true);
+		// Set global vars, on this set call.
+		// So that "increment_cal" can be called/ externally controlled by another clock.
+	
+		i_month = ((display_mat[0][0] - '0') * 10) + (display_mat[0][1] - '0');
+		i_day = ((display_mat[0][3] - '0') * 10) + (display_mat[0][4] - '0');
+		i_year_first = (display_mat[0][6] - '0') * 10 + (display_mat[0][7] - '0');
+		i_year_second = (display_mat[0][8] - '0') * 10 + (display_mat[0][9] - '0');
+		i_hour = ((display_mat[1][0] - '0') * 10) + (display_mat[1][1] - '0');
+		i_min = ((display_mat[1][3] - '0') * 10) + (display_mat[1][4] - '0');
+		i_sec = ((display_mat[1][6] - '0') * 10) + (display_mat[1][7] - '0');
+		is_leap_year = check_leap_year();
+		past_twelve = 0;
+		return 1;
+	}
+	return 0;
 }
 
 void date_inc(){
@@ -336,20 +358,22 @@ void date_inc(){
 	else{
 		max_day = 31;
 	}
-	if(i_day >= max_day){
+	if(i_day > max_day){
 		++i_month;
-		i_day = 0x00;
+		i_day = 0x01;
 		update_lcd_vals(i_month, 0, 0);
 		update_lcd_vals(i_day, 0, 3);
 	}
 	if(i_month > 12){
-		++i_year_first;
-		if(i_year_first > 99){
-			++i_year_second;
-			i_year_first = 0x00;
+		++i_year_second;
+		i_month = 0x01;
+		if(i_year_second > 99){
+			++i_year_first;
+			i_year_second = 0x00;
 		}
-		update_lcd_vals(i_year_first, 0, 8);
-		update_lcd_vals(i_year_second, 0, 6);
+		update_lcd_vals(i_month, 0, 0);
+		update_lcd_vals(i_year_first, 0, 6);
+		update_lcd_vals(i_year_second, 0, 8);
 	}
 }
 
@@ -365,7 +389,7 @@ void increment_cal(){
 			update_lcd_vals(i_hour, 1, 0);
 			update_lcd_vals(i_min, 1, 3);
 		}
-		if(i_hour >= 12){
+		if(i_hour >= 12 && !past_twelve){
 			if(display_mat[1][8] == 'a'){
 				change_am_pm();
 				}else if(display_mat[1][8] == 'p'){
@@ -374,12 +398,17 @@ void increment_cal(){
 				update_lcd_vals(i_day, 0, 3);
 				date_inc();
 			}
-			i_hour = 0x00;
 			i_min = 0x00;
 			i_sec = 0x00;
 			update_lcd_vals(i_sec, 1, 6);
-			update_lcd_vals(i_hour, 1, 0);
 			update_lcd_vals(i_min, 1, 3);
+			update_lcd_vals(i_hour, 1, 0);
+			past_twelve = 1;
+		}
+		if(i_hour >= 13){
+			i_hour = 0x01;
+			update_lcd_vals(i_hour, 1, 0);
+			past_twelve = 0;
 		}
 		avr_wait(1000);
 		++i_sec;

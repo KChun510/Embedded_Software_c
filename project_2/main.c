@@ -30,8 +30,9 @@ void check_reset_lcd(){
 void check_hash_lcd(){
 	avr_wait(1000);
 	if(get_key() == '#'){
-		set_lcd();
-		lcd_is_set = 1;
+		if(set_lcd()){
+			lcd_is_set = 1;
+		}
 		avr_wait(500);
 	}else{
 		change_am_pm();
