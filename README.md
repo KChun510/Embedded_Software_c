@@ -22,8 +22,8 @@ Each project demonstrates a specific concept or peripheral, including schematics
 Below are visual references stored in the `diagram/` directory:
 
 <!-- Example image links below. Replace or add filenames as needed -->
-![Project 2](Diagram/keypad_interface.png)
-![Project 1](Diagram/blink_diagram.png)
+![Project 2](diagram/keypad_interface.png)
+![Project 1](diagram/blink_diagram.png)
 ---
 
 ## 🔧 Tools and Setup
