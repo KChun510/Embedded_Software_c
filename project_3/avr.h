@@ -1,0 +1,26 @@
+/**
+ * avr.h
+ * Copyright (C) 2001-2020, Tony Givargis
+ */
+
+#ifndef _AVR_H_
+#define _AVR_H_
+
+#include <avr/interrupt.h>
+#include <avr/pgmspace.h>
+#include <avr/io.h>
+
+#define NULL ((void*)0)
+
+#define XTAL_FRQ 8000000lu
+
+#define SET_BIT(p,i) ((p) |=  (1 << (i)))
+#define CLR_BIT(p,i) ((p) &= ~(1 << (i)))
+#define GET_BIT(p,i) ((p) &   (1 << (i)))
+
+#define NOP() asm volatile("nop"::)
+
+void avr_wait(unsigned short msec);
+
+void avr_wait_125us_x(uint16_t count);
+#endif /* _AVR_H_ */
