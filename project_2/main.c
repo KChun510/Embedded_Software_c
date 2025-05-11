@@ -4,7 +4,6 @@
  * Created: 4/15/2025 9:14:00 PM
  * Author : westcoast
  */ 
-#include <avr/io.h>
 #include "avr.h"
 #include "lcd.h"
 #include "keypad.h"
