@@ -1,0 +1,1092 @@
+/**
+ * avr.c
+ * Copyright (C) 2001-2020, Tony Givargis
+ */
+
+#include "avr.h"
+
+void avr_wait(unsigned short msec)
+{
+	TCCR0 = 3; // Start timer with pre-scaling 8mHz / 64
+	while (msec--) {
+		TCNT0 = (unsigned char)(256 - (XTAL_FRQ / 64) * 0.001048); // Pre-filling bucket 
+		SET_BIT(TIFR, TOV0); // TIFR ( Time Interrupt Flag Reg  ), TOV0 ( Index 0, of TIFR. Flips to one when timer/ overflow hit )
+		while (!GET_BIT(TIFR, TOV0));
+	}
+	TCCR0 = 0; // Turn off timer
+}
+
+void avr_wait_125us_x(uint16_t count) {
+	TCCR0 = (1 << WGM01) | (1 << CS01); // CTC mode
+	OCR0 = 124;
+
+	for (uint16_t i = 0; i < count; ++i) {
+		TCNT0 = 0;
+		SET_BIT(TIFR, OCF0);  // Clear flag
+		while (!GET_BIT(TIFR, OCF0));  // Wait for match
+	}
+
+	TCCR0 = 0; // Disable timer after all
+}
+
+/**
+ * avr.h
+ * Copyright (C) 2001-2020, Tony Givargis
+ */
+
+#ifndef _AVR_H_
+#define _AVR_H_
+
+#include <avr/interrupt.h>
+#include <avr/pgmspace.h>
+#include <avr/io.h>
+
+#define NULL ((void*)0)
+
+#define XTAL_FRQ 8000000lu
+
+#define SET_BIT(p,i) ((p) |=  (1 << (i)))
+#define CLR_BIT(p,i) ((p) &= ~(1 << (i)))
+#define GET_BIT(p,i) ((p) &   (1 << (i)))
+
+#define NOP() asm volatile("nop"::)
+
+void avr_wait(unsigned short msec);
+
+void avr_wait_125us_x(uint16_t count);
+#endif /* _AVR_H_ *//*
+ * keypad.c
+ *
+ * Created: 4/21/2025 1:15:56 PM
+ *  Author: westcoast
+ */ 
+#include "keypad.h"
+
+const uint8_t key_map[4][4] = {
+		{ '1', '2', '3', 'A'},
+		{ '4', '5', '6', 'B'},
+		{ '7', '8', '9', 'C'},
+		{ '*', '0', '#', 'D'}
+};
+
+int is_pressed(int r, int c){
+	// Need to set col to LOW
+	// So that when button pressed, row also reads LOW
+	// C is going to be a val from 0-4. Need to add offset.
+	// Add +4 to C, to access corresponding bit.
+	unsigned char button_pressed = 0;
+	CLR_BIT(PORTC, c);
+	avr_wait(1); // Need to wait for low to settle before continue
+	
+	if(!GET_BIT(PINC, r)){
+		button_pressed = key_map[r][c - 4];
+	}
+	SET_BIT(PORTC, c);
+	return button_pressed;
+}
+
+// In the physical world, you want to set col for outer loop.
+// Set the keypad col to LOW for a longer period of time.
+int get_key(){
+	unsigned char r,c;
+	uint8_t pressed;
+	for(c = 4; c < 8; ++c){
+		for(r = 0; r < 4; ++r){
+			pressed = is_pressed(r, c);
+			if(pressed){
+				return pressed;
+			}
+		}
+	}
+	return 0;
+}
+
+void keypad_init(){
+		// Using A series pins for Keypad
+		// Pins (5-8) col/output, (4-1) row/input
+		DDRC = DDRC | 0xF0;	
+		// Need row pins to be pulled up, and cols as HIGH
+		PORTC = PORTC | 0xFF;
+}/*
+ * keypad.h
+ *
+ * Created: 4/21/2025 1:16:37 PM
+ *  Author: westcoast
+ */ 
+
+#ifndef _KEYPAD_H
+#define _KEYPAD_H
+#include "avr.h"
+
+int get_key();
+int is_pressed(int r, int c);
+void keypad_init();
+
+#endif
+/*
+ * lcd.c
+ *
+ * Created: 4/21/2025 11:46:18 AM
+ *  Author: westcoast
+ */ 
+#include "avr.h"
+#include "lcd.h"
+#include <string.h>
+
+const char line1[] PROGMEM = "MM/DD/YYYY   OFF";
+const char line2am[] PROGMEM = "HH:MM:SSam    ST";
+const char line2pm[] PROGMEM = "HH:MM:SSpm    ST";
+const char line2mil[] PROGMEM = "HH:MM:SS    24hr";
+char display_mat[2][50] = {"MM/DD/YYYY   OFF", "HH:MM:SSam    ST"};
+uint8_t is_leap_year = 0;
+uint8_t past_twelve = 0;
+
+static uint8_t row0_col = 0x80;
+static uint8_t row1_col = 0xC0;
+uint8_t LCD_ROW_1 = 1;
+uint8_t write_one = 1;
+static uint8_t *curr_addr = &row0_col;
+
+
+uint8_t i_month;
+uint8_t i_day;
+// NEED to split year into two halves. 2^8 = 256 < 2020
+uint8_t i_year_first;
+uint8_t i_year_second;
+uint8_t i_hour;
+uint8_t i_min;
+uint8_t i_sec;
+
+static inline void
+sleep_700ns(void)
+{
+	NOP();
+	NOP();
+	NOP();
+	NOP();
+	NOP();
+	NOP();
+	return;
+}
+
+void lcd_pulse_enable(){
+	// Enable Pin, set on pin 2
+	SET_BIT(PORTD, 2);
+	avr_wait(1);
+	CLR_BIT(PORTD, 2);
+	avr_wait(1);
+}
+
+void print_hex(uint8_t byte){
+	const char hex_chars[] = "0123456789ABCDEF";
+	lcd_put(hex_chars[(byte >> 4) & 0x0F]);
+	lcd_put(hex_chars[byte & 0x0F]);
+}
+
+void send_lcd_data(unsigned char data, bool instruc){
+	if(instruc){
+		CLR_BIT(PORTD, 0);
+		}else{
+		SET_BIT(PORTD, 0);
+	}
+	avr_wait(1);
+	// Cap first and second nib.
+	// And align with data pins.
+	unsigned char first_nib = ((data >> 4) & 0x0F) << 3;
+	unsigned char sec_nib = (data & 0x0F) << 3;
+
+	// First clear data line, and keep config settings
+	PORTD = (PORTD & 0X07) | first_nib;
+	lcd_pulse_enable();
+	
+	// Clear bits for next nibble
+	PORTD = (PORTD & 0X07) | sec_nib;
+	lcd_pulse_enable();
+}
+
+void lcd_write_default(const char song_name[]){
+	row0_col = 0x80;
+	row1_col = 0xC0;
+	curr_addr = &row0_col;
+	lcd_clr();
+	lcd_puts2(song_name);
+	lcd_cursor_pos(&LCD_ROW_1, NULL);
+	lcd_puts2("<              >");
+}
+
+void lcd_init(const char first_song[])
+{
+	// D series, used for LCD.
+	// All pins OUTPUT, except pin 8 unused.
+	DDRD = DDRD | 0x7F;
+	// Need to put it into "Instruction Mode, DataWrite"
+	PORTD = 0X00;
+	// Data sheet Req, wait 15ms> on power up.
+	avr_wait(16);
+	// Init sequence for 4 bit mode
+	send_lcd_data(0x30, true);
+	// Wait time according to spec
+	avr_wait(5);
+	send_lcd_data(0x30, true);
+	avr_wait(1);
+	send_lcd_data(0x30, true);
+	avr_wait(1);
+
+	// Send 0x20 to switch to 4-bit mode
+	send_lcd_data(0x2, true);
+
+	send_lcd_data(0x28, true); // Function set: 4-bit, 2-line
+	send_lcd_data(0x06, true); // Entry Mode Set: decrement, no shift (DO THIS LAST)
+	send_lcd_data(0x0F, true); // Display ON (cursor on/off as you want)
+
+	lcd_write_default(first_song);
+}
+
+void lcd_clr(void)
+{
+	send_lcd_data(0x01, true);
+	avr_wait(2);
+}
+
+uint8_t check_cursor_pos(){
+	//Invalid_cols to modify: 2 & 5
+	if(((*curr_addr & 0x0F) == 2) || ((*curr_addr & 0x0F) == 5) || ((*curr_addr & 0x0F) > ((*curr_addr & 0xF0) == 0x80 ?  0x09 : 0x07))){
+		return 0;
+	} 
+	return 1;
+}
+
+void lcd_cursor_pos(uint8_t* shift_r, uint8_t* shift_col)
+{
+	if(shift_r != NULL){
+		curr_addr = (*shift_r == 0) ? &row0_col : &row1_col;
+	}
+
+	if(shift_col != NULL){
+		if((*curr_addr & 0xF0) == 0x80){
+			*curr_addr = (uint8_t)((int)*curr_addr + ((*shift_col == 0) ? -1 : 1));
+			if(*curr_addr < 0x80) *curr_addr = 0x80;
+			if(*curr_addr > 0x89) *curr_addr = 0x89;
+		}else{
+			*curr_addr = (uint8_t)((int)*curr_addr + ((*shift_col == 0) ? -1 : 1));
+			if(*curr_addr < 0xC0) *curr_addr = 0xC0;
+			if(*curr_addr > 0xC7) *curr_addr = 0xC7;
+		}
+	}
+	send_lcd_data(*curr_addr, true);
+}
+
+void lcd_put(char c)
+{
+	send_lcd_data(c, false);
+}
+
+// Reads from prgm mem/ flash mem
+void lcd_puts1(const char *s)
+{
+	char c;
+	while ((c = pgm_read_byte(s++)) != 0) {
+		send_lcd_data(c, false);
+	}
+}
+
+// Reads from DDRAM
+void lcd_puts2(const char *s)
+{
+	char c;
+	while ((c = *(s++)) != 0) {
+		send_lcd_data(c, false);
+	}
+}
+
+uint8_t validate_input(uint8_t row, uint8_t col, char c){
+	// Two sets of rules, for r0 and r1
+	uint8_t i = c - '0';
+	switch(row){
+		case 0:
+			if(col == 0){
+				if((i == 0 || i == 1)){
+					if(display_mat[0][1] != 'M' &&  i == 1 && ((display_mat[0][1] - '0') >= 3)){
+						return 0;
+					}
+				}
+			}
+			if(col == 1){
+				if(display_mat[0][0] == 'M') return 0;
+				uint8_t num_concat = (display_mat[0][0] - '0') * 10 + i;			
+				if(num_concat >= 13)return 0;
+			}
+			if(col == 3 || col == 4){
+				uint8_t num_concat = (display_mat[0][0] - '0') * 10 + (display_mat[0][1] - '0');
+				if(num_concat >= 1 && num_concat <= 12){
+					// Months with 30 days
+					if(num_concat == 4 || num_concat == 6 || num_concat == 9 || num_concat == 11){
+						if((col == 3) && (i > 3)) return 0;
+						if((col == 3) && (display_mat[0][4] >= 0 && display_mat[0][4] != 'D')) return 0;
+						if((col == 4) && (display_mat[0][3] - '0') == 3 && i != 0) return 0;
+					}
+					// Special case Feb
+					else if(num_concat == 2){
+						if((col == 3) && (i > 2)) return 0;
+					}
+					// Months with 31 days
+					else{
+						if((col == 3) && (i > 3)) return 0;
+						if((col == 3) &&(display_mat[0][4] >= 1 && display_mat[0][4] != 'D')) return 0;
+						if(col == 4 && display_mat[0][4] - '0' == 3 && c > 1) return 0;
+					}
+				}else{
+					 return 0;
+				}
+			}
+			break;
+		case 1:
+			if(col == 0 && i > 1) return 0;
+			if(col == 0 && (display_mat[1][1] != 'H') && (display_mat[1][1] - '0') > 2) return 0;
+			if(col == 1){
+				if((i > 2 && (display_mat[1][0] - '0' == 1)) || display_mat[1][0] == 'H') return 0;
+			}
+			if(col == 3 && i > 6) return 0;
+			if(col == 4 ){
+				if(((display_mat[1][3] - '0' == 6) && (i > 0)) || (display_mat[1][3] == 'M')) return 0;
+			}
+			break;
+	}
+	return 1;
+}
+
+// Used for updating, from main/user control.
+void lcd_update(char c){
+	// addr of row 1: 0xC0
+	// addr of row 0: 0x80
+	//char display_mat[2][50] = {"MM/DD/YYYY   OFF", "HH:MM:SSam    ST"};
+	uint8_t curr_row = ((*curr_addr & 0xF0) ==  0x80) ? 0 : 1;
+	uint8_t curr_col = *curr_addr & 0x0F;
+	if(check_cursor_pos()){
+		if(validate_input(curr_row, curr_col, c)){
+			*curr_addr += 1;
+			display_mat[curr_row][curr_col] = c;
+			lcd_put(c);
+		}
+	}
+}
+
+uint8_t check_leap_year(){
+	char i_year[5];
+	for(uint8_t i = 6; i <= 9; ++i){
+		i_year[i - 6] = display_mat[0][i];
+	};
+	uint8_t numer_year = (i_year[0] - '0') * 1000 + (i_year[1] - '0') * 100 + (i_year[2] - '0') * 10 + (i_year[3] - '0');
+
+	if(numer_year % 4 != 0) return 0;
+	else if (numer_year % 100 != 0) return 1;
+	else if (numer_year % 400 != 0) return 0;
+	else return 1;
+}
+
+void reset_lcd(){
+	display_mat[0][13] = 'O';
+	display_mat[0][14] = 'F';
+	display_mat[0][15] = 'F';
+	/*
+	strcpy(display_mat[0], line1);
+	strcpy(display_mat[1], line2am);
+	*/
+	//lcd_write_default();
+	send_lcd_data(0x0F, true);
+	
+	// Reset vars to default
+	i_month = ((display_mat[0][0] - '0') * 10) + (display_mat[0][1] - '0');
+	i_day = ((display_mat[0][3] - '0') * 10) + (display_mat[0][4] - '0');
+	i_year_first = (display_mat[0][6] - '0') * 10 + (display_mat[0][7] - '0');
+	i_year_second = (display_mat[0][8] - '0') * 10 + (display_mat[0][9] - '0');
+	i_hour = ((display_mat[1][0] - '0') * 10) + (display_mat[1][1] - '0');
+	i_min = ((display_mat[1][3] - '0') * 10) + (display_mat[1][4] - '0');
+	i_sec = ((display_mat[1][6] - '0') * 10) + (display_mat[1][7] - '0');
+	
+}
+
+void change_am_pm(){
+	if (display_mat[1][8] == 'a'){
+		display_mat[1][8] = 'p';
+	}else{
+		display_mat[1][8] = 'a';
+	}
+	//lcd_write_default();
+}
+
+void update_lcd_vals(uint8_t num, uint8_t row, uint8_t col){
+	uint8_t row_addr = (row == 0) ? (0x80 + col) : (0xC0 + col);
+	send_lcd_data(row_addr, true);
+	if(num >= 100){
+		send_lcd_data((num / 100) + '0', false);
+		num %= 100;
+		send_lcd_data((num / 10) + '0', false); 
+		send_lcd_data((num % 10) + '0', false);
+	}else if (num >= 10){
+		send_lcd_data((num / 10) + '0', false);
+		send_lcd_data((num % 10) + '0', false);
+	} else {
+		send_lcd_data('0', false);
+		send_lcd_data(num + '0', false);
+	}
+}
+
+uint8_t check_valid_set(){
+	uint8_t max_col = 10;
+	for(uint8_t i = 0; i < 2; ++i){
+		if(i == 1) max_col -= 2;
+		for(uint8_t j = 0; j < max_col; ++j){
+			if(j == 2 || j == 5) ++j;
+			if(!((display_mat[i][j] >= 0x30) && (display_mat[i][j] <= 0x39))){
+				return 0;
+			}
+		}
+	}
+	return 1;
+}
+
+uint8_t set_lcd(){
+	if(check_valid_set()){
+		display_mat[0][13] = ' ';
+		display_mat[0][14] = 'O';
+		display_mat[0][15] = 'N';
+		check_leap_year();
+		//lcd_write_default();
+		send_lcd_data(0x0C, true);
+		// Set global vars, on this set call.
+		// So that "increment_cal" can be called/ externally controlled by another clock.
+	
+		i_month = ((display_mat[0][0] - '0') * 10) + (display_mat[0][1] - '0');
+		i_day = ((display_mat[0][3] - '0') * 10) + (display_mat[0][4] - '0');
+		i_year_first = (display_mat[0][6] - '0') * 10 + (display_mat[0][7] - '0');
+		i_year_second = (display_mat[0][8] - '0') * 10 + (display_mat[0][9] - '0');
+		i_hour = ((display_mat[1][0] - '0') * 10) + (display_mat[1][1] - '0');
+		i_min = ((display_mat[1][3] - '0') * 10) + (display_mat[1][4] - '0');
+		i_sec = ((display_mat[1][6] - '0') * 10) + (display_mat[1][7] - '0');
+		is_leap_year = check_leap_year();
+		past_twelve = 0;
+		return 1;
+	}
+	return 0;
+}
+
+void date_inc(){
+	uint8_t max_day;
+	if(i_month == 4 || i_month == 6 || i_month == 9 || i_month == 11){
+		max_day = 30;
+	}
+	else if(i_month == 2){
+		max_day = (is_leap_year ? 29 : 28);
+	}
+	else{
+		max_day = 31;
+	}
+	if(i_day > max_day){
+		++i_month;
+		i_day = 0x01;
+		update_lcd_vals(i_month, 0, 0);
+		update_lcd_vals(i_day, 0, 3);
+	}
+	if(i_month > 12){
+		++i_year_second;
+		i_month = 0x01;
+		if(i_year_second > 99){
+			++i_year_first;
+			i_year_second = 0x00;
+		}
+		update_lcd_vals(i_month, 0, 0);
+		update_lcd_vals(i_year_first, 0, 6);
+		update_lcd_vals(i_year_second, 0, 8);
+	}
+}
+
+void increment_cal(){
+		if(i_sec >= 60){
+			++i_min;
+			update_lcd_vals(i_min, 1, 3);
+			i_sec = 0x00;
+		}
+		if(i_min >= 60){
+			++i_hour;
+			i_min = 0x00;
+			update_lcd_vals(i_hour, 1, 0);
+			update_lcd_vals(i_min, 1, 3);
+		}
+		if(i_hour >= 12 && !past_twelve){
+			if(display_mat[1][8] == 'a'){
+				change_am_pm();
+				}else if(display_mat[1][8] == 'p'){
+				++i_day;
+				change_am_pm();
+				update_lcd_vals(i_day, 0, 3);
+				date_inc();
+			}
+			i_min = 0x00;
+			i_sec = 0x00;
+			update_lcd_vals(i_sec, 1, 6);
+			update_lcd_vals(i_min, 1, 3);
+			update_lcd_vals(i_hour, 1, 0);
+			past_twelve = 1;
+		}
+		if(i_hour >= 13){
+			i_hour = 0x01;
+			update_lcd_vals(i_hour, 1, 0);
+			past_twelve = 0;
+		}
+		avr_wait(1000);
+		++i_sec;
+		update_lcd_vals(i_sec, 1, 6);
+}/*
+ * lcd.h
+ *
+ * Created: 4/21/2025 11:45:17 AM
+ *  Author: westcoast
+ */ 
+#ifndef _LCD_H
+#define _LCD_H
+#include <stdbool.h>
+
+void get_lcd_data(void);
+
+void send_lcd_data(unsigned char data, bool instruc);
+
+void lcd_init(const char first_song[]);
+
+void lcd_clr(void);
+
+void lcd_cursor_pos(uint8_t* shift_r, uint8_t* shift_col);
+
+void lcd_write_default(const char song_name[]);
+
+void lcd_put(char c);
+
+void lcd_puts1(const char *s);
+
+void lcd_puts2(const char *s);
+
+void lcd_update(char c);
+
+uint8_t set_lcd();
+
+void reset_lcd();
+
+void change_am_pm();
+
+void increment_cal();
+
+#endif /* _LCD_H *//*
+ * project_2.c
+ *
+ * Created: 4/15/2025 9:14:00 PM
+ * Author : westcoast
+ */ 
+#include <avr/io.h>
+#include "avr.h"
+#include "lcd.h"
+#include "keypad.h"
+#include "speaker.h"
+#include "music.h"
+
+unsigned char left = 0;
+unsigned char right = 1;
+unsigned char down = 1;
+unsigned char up = 0;
+unsigned char lcd_is_set = 0;
+
+// Note: Adjustments to the input cycle count must be adjusted, to a account for cycles
+// Taken in loop.
+void wait_cycle_count(uint16_t cycle_count){
+	for(int i = 0; i < cycle_count; ++i){
+		//125ns I.e: 1/8Mhz
+		NOP();
+	}
+}
+
+void check_reset_lcd(){
+	avr_wait(2000);
+	if(get_key() == '*'){
+		reset_lcd();
+		lcd_is_set = 0;
+	}
+}
+
+void move_lcd_cursor(uint8_t *key_pad_input){
+	switch(*key_pad_input){
+		case 'A':
+			lcd_cursor_pos(&up, NULL);
+			break;
+		case 'B':
+			lcd_cursor_pos(&down,NULL);
+			break;
+		case 'C':
+			lcd_cursor_pos(NULL, &left);
+			break;
+		case 'D':
+			lcd_cursor_pos(NULL, &right);
+			break;
+	}
+}
+
+void play_note(const PlayingNote* note_data){
+	NoteTiming res = get_note_timing(note_data);
+	const uint16_t cycle_count = (res.TH * 8) / 6;
+	for(int i = 0; i < res.K ; ++i){
+		SET_BIT(PORTB, 2);
+		wait_cycle_count(cycle_count);
+		CLR_BIT(PORTB, 2);
+		wait_cycle_count(cycle_count);
+	}
+}
+
+// During set mode.
+// Pressing #, will change from AM to PM
+// Holding #, will set the clock
+void check_hash_lcd(uint8_t* play_pause){
+	*play_pause = !(*play_pause);
+	if(*play_pause){
+		SET_BIT(PORTB, 0);
+	}else{
+		CLR_BIT(PORTB, 0);
+	}
+	avr_wait(500);
+}
+
+void play_song(Track* song){
+	for(size_t note_i = 0; note_i < song->length; ++note_i){
+			play_note(&song->song[note_i]);
+	}
+}
+
+void check_button_press(Track* curr_song){
+	//PlayingNote note_data = {A , W};
+	SET_BIT(PORTB, 0);
+	play_song(curr_song);
+}
+
+void change_song(uint8_t* curr_song_index, Track* curr_song, int8_t inc_or_dec){
+	uint8_t song_index = *curr_song_index + inc_or_dec;
+	if(song_index == 255){
+		song_index = song_count - 1;
+	}else if(song_index >= song_count){
+		song_index = 0;
+	}
+	*curr_song = music_track[song_index];
+	*curr_song_index = song_index;
+}
+
+int main(void)
+{
+	// Using B series pins for push button and LED
+	DDRB = DDRB | 0x05;
+	
+	uint8_t curr_song_index = 0;
+	Track curr_song = music_track[curr_song_index];
+	uint8_t play_pause = 0;
+	size_t note_i = 0;
+	unsigned char key_pad_input;
+	
+	keypad_init();
+	lcd_init(curr_song.song_name);
+	
+    while (1) {
+		key_pad_input = get_key();
+		if(!(PINB & 0X02)){
+			check_button_press(&curr_song);
+		}
+		// Use this for Play/ Pause		
+		else if (key_pad_input == '#'){
+			check_hash_lcd(&play_pause);
+		// Buttons A and B, used for left and right.
+		}else if (key_pad_input == 0x41 || key_pad_input == 0x42){
+			if(key_pad_input == 0x41){
+				change_song(&curr_song_index, &curr_song, -1);
+			}else{
+				change_song(&curr_song_index, &curr_song, 1);
+			}
+			lcd_write_default(curr_song.song_name);
+			avr_wait(250);
+		}
+		if(play_pause){
+			if(note_i < curr_song.length){
+				play_note(&curr_song.song[note_i]);
+				++note_i;
+			}else{
+				note_i = 0;
+			}
+		}		
+    }
+	return 0;
+}
+
+// Use PORT for writing
+// USE PIN for reading
+/*
+* Concept of Pull (up and down), applies to pins that are set as input.
+* Writing to a pin thats set for input, changes its pull value
+* Writing 1 = pull up (Pin set to HIGH)
+* Writing 0 = pull down (Pin set to LOW)
+*/
+	
+// DDR Convention:
+/*
+* Set pin to 0, for INPUT
+* Set pin to 1, for OUTPUT	
+*/
+	
+
+/*
+ * music.c
+ *
+ * Created: 5/11/2025 11:07:52 AM
+ *  Author: westcoast
+ */ 
+#include "music.h"
+uint8_t song_count = 5;
+const PlayingNote basic_drum[] = {
+	{A, Q}, {A, Q}, {Ee, Q}, {A, Q},
+	{C, Q}, {Ee, Q}, {G, Q}, {Ee, Q}
+};
+const PlayingNote doom_beat[] = {
+	{Ee, Q}, {Ee, Q}, {G, E}, {Ee, E},
+	{D, Q}, {C, Q}, {Ee, H}
+};
+const PlayingNote trap_kick[] = {
+	{C, Q}, {C, E}, {C, E}, {D, Q}, {G, H},
+	{C, Q}, {D, Q}, {Ee, Q}, {D, Q}
+};
+const PlayingNote kick_snare[] = {
+	{C, H}, {G, Q}, {C, H}, {G, Q},
+	{D, Q}, {Ee, Q}, {D, H}
+};
+const PlayingNote techno[] = {
+	{A, E}, {A, E}, {C, E}, {D, E},
+	{A, E}, {C, E}, {D, E}, {Ee, E},
+	{F, Q}, {G, Q}
+};
+Track music_track[] = {{"   basic_drum   ", basic_drum, 8} , { "   dooms_beat   ", doom_beat, 7} , {"   trap_kick   ", trap_kick, 9} , {"   kick_snare   ", kick_snare, 7}, {"     techno     ",techno, 10}};
+
+
+/*
+ * music.h
+ *
+ * Created: 5/11/2025 11:08:08 AM
+ *  Author: westcoast
+ */ 
+#ifndef _MUSIC_H
+#define _MUSIC_H
+#include "speaker.h"
+typedef struct {
+	char song_name[16];
+	const PlayingNote* song;
+	size_t length;
+} Track;
+extern uint8_t song_count;
+extern const PlayingNote basic_drum[];
+extern const PlayingNote doom_beat[];
+extern const PlayingNote trap_kick[];
+extern const PlayingNote kick_snare[];
+extern const PlayingNote techno[];
+extern Track music_track[]; 
+#endif
+
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Store xmlns:i="http://www.w3.org/2001/XMLSchema-instance" xmlns="AtmelPackComponentManagement">
+	<ProjectComponents>
+		<ProjectComponent z:Id="i1" xmlns:z="http://schemas.microsoft.com/2003/10/Serialization/">
+			<CApiVersion></CApiVersion>
+			<CBundle></CBundle>
+			<CClass>Device</CClass>
+			<CGroup>Startup</CGroup>
+			<CSub></CSub>
+			<CVariant></CVariant>
+			<CVendor>Atmel</CVendor>
+			<CVersion>1.7.0</CVersion>
+			<DefaultRepoPath>C:/Program Files (x86)\Atmel\Studio\7.0\Packs</DefaultRepoPath>
+			<DependentComponents xmlns:d4p1="http://schemas.microsoft.com/2003/10/Serialization/Arrays" />
+			<Description></Description>
+			<Files xmlns:d4p1="http://schemas.microsoft.com/2003/10/Serialization/Arrays">
+				<d4p1:anyType i:type="FileInfo">
+					<AbsolutePath>C:/Program Files (x86)\Atmel\Studio\7.0\Packs\atmel\ATmega_DFP\1.7.374\include\</AbsolutePath>
+					<Attribute></Attribute>
+					<Category>include</Category>
+					<Condition>C</Condition>
+					<FileContentHash i:nil="true" />
+					<FileVersion></FileVersion>
+					<Name>include/</Name>
+					<SelectString></SelectString>
+					<SourcePath></SourcePath>
+				</d4p1:anyType>
+				<d4p1:anyType i:type="FileInfo">
+					<AbsolutePath>C:/Program Files (x86)\Atmel\Studio\7.0\Packs\atmel\ATmega_DFP\1.7.374\include\avr\iom32.h</AbsolutePath>
+					<Attribute></Attribute>
+					<Category>header</Category>
+					<Condition>C</Condition>
+					<FileContentHash>lmy51QeNKtBwSFwznyeJmw==</FileContentHash>
+					<FileVersion></FileVersion>
+					<Name>include/avr/iom32.h</Name>
+					<SelectString></SelectString>
+					<SourcePath></SourcePath>
+				</d4p1:anyType>
+				<d4p1:anyType i:type="FileInfo">
+					<AbsolutePath>C:/Program Files (x86)\Atmel\Studio\7.0\Packs\atmel\ATmega_DFP\1.7.374\templates\main.c</AbsolutePath>
+					<Attribute>template</Attribute>
+					<Category>source</Category>
+					<Condition>C Exe</Condition>
+					<FileContentHash>v5dSDvriBeRVX+1AQjlYkg==</FileContentHash>
+					<FileVersion></FileVersion>
+					<Name>templates/main.c</Name>
+					<SelectString>Main file (.c)</SelectString>
+					<SourcePath></SourcePath>
+				</d4p1:anyType>
+				<d4p1:anyType i:type="FileInfo">
+					<AbsolutePath>C:/Program Files (x86)\Atmel\Studio\7.0\Packs\atmel\ATmega_DFP\1.7.374\templates\main.cpp</AbsolutePath>
+					<Attribute>template</Attribute>
+					<Category>source</Category>
+					<Condition>C Exe</Condition>
+					<FileContentHash>mkKaE95TOoATsuBGv6jmxg==</FileContentHash>
+					<FileVersion></FileVersion>
+					<Name>templates/main.cpp</Name>
+					<SelectString>Main file (.cpp)</SelectString>
+					<SourcePath></SourcePath>
+				</d4p1:anyType>
+				<d4p1:anyType i:type="FileInfo">
+					<AbsolutePath>C:/Program Files (x86)\Atmel\Studio\7.0\Packs\atmel\ATmega_DFP\1.7.374\gcc\dev\atmega32</AbsolutePath>
+					<Attribute></Attribute>
+					<Category>libraryPrefix</Category>
+					<Condition>GCC</Condition>
+					<FileContentHash i:nil="true" />
+					<FileVersion></FileVersion>
+					<Name>gcc/dev/atmega32</Name>
+					<SelectString></SelectString>
+					<SourcePath></SourcePath>
+				</d4p1:anyType>
+			</Files>
+			<PackName>ATmega_DFP</PackName>
+			<PackPath>C:/Program Files (x86)/Atmel/Studio/7.0/Packs/atmel/ATmega_DFP/1.7.374/Atmel.ATmega_DFP.pdsc</PackPath>
+			<PackVersion>1.7.374</PackVersion>
+			<PresentInProject>true</PresentInProject>
+			<ReferenceConditionId>ATmega32</ReferenceConditionId>
+			<RteComponents xmlns:d4p1="http://schemas.microsoft.com/2003/10/Serialization/Arrays">
+				<d4p1:string></d4p1:string>
+			</RteComponents>
+			<Status>Resolved</Status>
+			<VersionMode>Fixed</VersionMode>
+			<IsComponentInAtProject>true</IsComponentInAtProject>
+		</ProjectComponent>
+	</ProjectComponents>
+</Store>﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003" ToolsVersion="14.0">
+  <PropertyGroup>
+    <SchemaVersion>2.0</SchemaVersion>
+    <ProjectVersion>7.0</ProjectVersion>
+    <ToolchainName>com.Atmel.AVRGCC8.C</ToolchainName>
+    <ProjectGuid>dce6c7e3-ee26-4d79-826b-08594b9ad897</ProjectGuid>
+    <avrdevice>ATmega32</avrdevice>
+    <avrdeviceseries>none</avrdeviceseries>
+    <OutputType>Executable</OutputType>
+    <Language>C</Language>
+    <OutputFileName>$(MSBuildProjectName)</OutputFileName>
+    <OutputFileExtension>.elf</OutputFileExtension>
+    <OutputDirectory>$(MSBuildProjectDirectory)\$(Configuration)</OutputDirectory>
+    <AssemblyName>project_3</AssemblyName>
+    <Name>project_3</Name>
+    <RootNamespace>project_3</RootNamespace>
+    <ToolchainFlavour>Native</ToolchainFlavour>
+    <KeepTimersRunning>true</KeepTimersRunning>
+    <OverrideVtor>false</OverrideVtor>
+    <CacheFlash>true</CacheFlash>
+    <ProgFlashFromRam>true</ProgFlashFromRam>
+    <RamSnippetAddress />
+    <UncachedRange />
+    <preserveEEPROM>true</preserveEEPROM>
+    <OverrideVtorValue />
+    <BootSegment>2</BootSegment>
+    <ResetRule>0</ResetRule>
+    <eraseonlaunchrule>0</eraseonlaunchrule>
+    <EraseKey />
+    <AsfFrameworkConfig>
+      <framework-data xmlns="">
+  <options />
+  <configurations />
+  <files />
+  <documentation help="" />
+  <offline-documentation help="" />
+  <dependencies>
+    <content-extension eid="atmel.asf" uuidref="Atmel.ASF" version="3.52.0" />
+  </dependencies>
+</framework-data>
+    </AsfFrameworkConfig>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
+    <ToolchainSettings>
+      <AvrGcc>
+  <avrgcc.common.Device>-mmcu=atmega32 -B "%24(PackRepoDir)\atmel\ATmega_DFP\1.7.374\gcc\dev\atmega32"</avrgcc.common.Device>
+  <avrgcc.common.outputfiles.hex>True</avrgcc.common.outputfiles.hex>
+  <avrgcc.common.outputfiles.lss>True</avrgcc.common.outputfiles.lss>
+  <avrgcc.common.outputfiles.eep>True</avrgcc.common.outputfiles.eep>
+  <avrgcc.common.outputfiles.srec>True</avrgcc.common.outputfiles.srec>
+  <avrgcc.common.outputfiles.usersignatures>False</avrgcc.common.outputfiles.usersignatures>
+  <avrgcc.compiler.general.ChangeDefaultCharTypeUnsigned>True</avrgcc.compiler.general.ChangeDefaultCharTypeUnsigned>
+  <avrgcc.compiler.general.ChangeDefaultBitFieldUnsigned>True</avrgcc.compiler.general.ChangeDefaultBitFieldUnsigned>
+  <avrgcc.compiler.symbols.DefSymbols>
+    <ListValues>
+      <Value>NDEBUG</Value>
+    </ListValues>
+  </avrgcc.compiler.symbols.DefSymbols>
+  <avrgcc.compiler.directories.IncludePaths>
+    <ListValues>
+      <Value>%24(PackRepoDir)\atmel\ATmega_DFP\1.7.374\include\</Value>
+    </ListValues>
+  </avrgcc.compiler.directories.IncludePaths>
+  <avrgcc.compiler.optimization.level>Optimize for size (-Os)</avrgcc.compiler.optimization.level>
+  <avrgcc.compiler.optimization.PackStructureMembers>True</avrgcc.compiler.optimization.PackStructureMembers>
+  <avrgcc.compiler.optimization.AllocateBytesNeededForEnum>True</avrgcc.compiler.optimization.AllocateBytesNeededForEnum>
+  <avrgcc.compiler.warnings.AllWarnings>True</avrgcc.compiler.warnings.AllWarnings>
+  <avrgcc.linker.libraries.Libraries>
+    <ListValues>
+      <Value>libm</Value>
+    </ListValues>
+  </avrgcc.linker.libraries.Libraries>
+  <avrgcc.assembler.general.IncludePaths>
+    <ListValues>
+      <Value>%24(PackRepoDir)\atmel\ATmega_DFP\1.7.374\include\</Value>
+    </ListValues>
+  </avrgcc.assembler.general.IncludePaths>
+</AvrGcc>
+    </ToolchainSettings>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
+    <ToolchainSettings>
+      <AvrGcc>
+  <avrgcc.common.Device>-mmcu=atmega32 -B "%24(PackRepoDir)\atmel\ATmega_DFP\1.7.374\gcc\dev\atmega32"</avrgcc.common.Device>
+  <avrgcc.common.outputfiles.hex>True</avrgcc.common.outputfiles.hex>
+  <avrgcc.common.outputfiles.lss>True</avrgcc.common.outputfiles.lss>
+  <avrgcc.common.outputfiles.eep>True</avrgcc.common.outputfiles.eep>
+  <avrgcc.common.outputfiles.srec>True</avrgcc.common.outputfiles.srec>
+  <avrgcc.common.outputfiles.usersignatures>False</avrgcc.common.outputfiles.usersignatures>
+  <avrgcc.compiler.general.ChangeDefaultCharTypeUnsigned>True</avrgcc.compiler.general.ChangeDefaultCharTypeUnsigned>
+  <avrgcc.compiler.general.ChangeDefaultBitFieldUnsigned>True</avrgcc.compiler.general.ChangeDefaultBitFieldUnsigned>
+  <avrgcc.compiler.symbols.DefSymbols>
+    <ListValues>
+      <Value>DEBUG</Value>
+    </ListValues>
+  </avrgcc.compiler.symbols.DefSymbols>
+  <avrgcc.compiler.directories.IncludePaths>
+    <ListValues>
+      <Value>%24(PackRepoDir)\atmel\ATmega_DFP\1.7.374\include\</Value>
+    </ListValues>
+  </avrgcc.compiler.directories.IncludePaths>
+  <avrgcc.compiler.optimization.level>Optimize debugging experience (-Og)</avrgcc.compiler.optimization.level>
+  <avrgcc.compiler.optimization.PackStructureMembers>True</avrgcc.compiler.optimization.PackStructureMembers>
+  <avrgcc.compiler.optimization.AllocateBytesNeededForEnum>True</avrgcc.compiler.optimization.AllocateBytesNeededForEnum>
+  <avrgcc.compiler.optimization.DebugLevel>Default (-g2)</avrgcc.compiler.optimization.DebugLevel>
+  <avrgcc.compiler.warnings.AllWarnings>True</avrgcc.compiler.warnings.AllWarnings>
+  <avrgcc.linker.libraries.Libraries>
+    <ListValues>
+      <Value>libm</Value>
+    </ListValues>
+  </avrgcc.linker.libraries.Libraries>
+  <avrgcc.assembler.general.IncludePaths>
+    <ListValues>
+      <Value>%24(PackRepoDir)\atmel\ATmega_DFP\1.7.374\include\</Value>
+    </ListValues>
+  </avrgcc.assembler.general.IncludePaths>
+  <avrgcc.assembler.debugging.DebugLevel>Default (-Wa,-g)</avrgcc.assembler.debugging.DebugLevel>
+</AvrGcc>
+    </ToolchainSettings>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="avr.c">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="avr.h">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="keypad.c">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="keypad.h">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="lcd.c">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="lcd.h">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="main.c">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="music.c">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="music.h">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="speaker.c">
+      <SubType>compile</SubType>
+    </Compile>
+    <Compile Include="speaker.h">
+      <SubType>compile</SubType>
+    </Compile>
+  </ItemGroup>
+  <Import Project="$(AVRSTUDIO_EXE_PATH)\\Vs\\Compiler.targets" />
+</Project>/*
+ * speaker.c
+ *
+ * Created: 5/10/2025 3:40:43 PM
+ *  Author: westcoast
+ */ 
+#include "speaker.h"
+
+const uint16_t period_us[12] = {
+	4545, 4290, 4048, 3822, 3609, 3405, 
+	3215, 3038, 2865, 2703, 2551, 2497
+};
+
+const uint16_t duration_ms[4] = {
+	2000, 1000, 500, 250
+};
+
+NoteTiming get_note_timing(const PlayingNote* note_data){
+	NoteTiming result;
+	uint16_t period = period_us[note_data->note];
+	result.TH = period >> 1;
+	result.K = (1000UL * duration_ms[note_data->duration] ) / period;
+	return result;
+};/*
+ * speaker.h
+ *
+ * Created: 5/10/2025 3:40:56 PM
+ *  Author: westcoast
+ */ 
+#ifndef _SPEAKER_H
+#define _SPEAKER_H
+#include "avr.h"
+
+typedef enum {
+	A, As, B, C, Cs, D, Ds, Ee, F, Fs, G, Gs
+} Note;
+
+typedef enum {
+	W, H, Q, E
+} Duration;
+
+// Using this type def
+// PlayingNote myNote = { A, W };
+// Pass by pointer play_note(&myNote);
+typedef struct {
+	Note note;
+	Duration duration;
+} PlayingNote;
+
+typedef struct {
+	uint16_t TH;
+	uint16_t K;
+} NoteTiming;
+
+NoteTiming get_note_timing(const PlayingNote* note_data);
+
+#endif
+
