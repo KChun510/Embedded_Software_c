@@ -40,7 +40,7 @@ uint16_t read_adc(void) {
 
 void timer1_init(void) {
 	TCCR1B = (1 << WGM12) | (1 << CS12);  // CTC mode, prescaler = 256
-	OCR1A = 15624;                        // 8MHz / 256 = 31,250 ? 31,250 * 0.5s = 15,625
+	OCR1A = 15624;                        // 8MHz / 256 = 31,250 * 0.5s = 15,625
 	TIMSK |= (1 << OCIE1A);               // Enable Timer1 Compare Match A interrupt
 }
 
